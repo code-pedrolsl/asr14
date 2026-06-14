@@ -14,9 +14,14 @@ RPC_TIMEOUT        = 2.0
 
 
 class NodeServicer(pb2_grpc.NodeServiceServicer):
+    """
+    Implementa o NodeService: exclusão mútua (quando coordenador)
+    + algoritmo Bully de eleição.
+    """
+
     def __init__(self, my_id: int, peers: dict[int, str]):
         self.my_id = my_id
-        self.peers = peers
+        self.peers = peers 
         self.log   = logging.getLogger(f"N{my_id}")
 
         self.lock = threading.RLock()
@@ -26,6 +31,8 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
         self.owner       = None
         self.owner_token = None
         self.queue       = []
+        self._lease_acquired_at = 0.0
+        threading.Thread(target=self._lease_watchdog, daemon=True).start()
 
     def _stub(self, peer_id: int) -> pb2_grpc.NodeServiceStub:
         return pb2_grpc.NodeServiceStub(grpc.insecure_channel(self.peers[peer_id]))
@@ -41,7 +48,8 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             if self.owner is None:
                 token = str(uuid.uuid4())[:8]
                 self.owner, self.owner_token = request.client_id, token
-                self.log.info("GRANT imediato -> %-12s (token=%s)", request.client_id, token)
+                self._lease_acquired_at = time.time()
+                self.log.info("GRANT imediato → %-12s (token=%s)", request.client_id, token)
                 return pb2.AcquireResponse(granted=True, token=token,
                                             coordinator_id=self.my_id)
 
@@ -59,7 +67,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             return pb2.AcquireResponse(granted=False, token="",
                                         coordinator_id=self.coordinator_id)
 
-        self.log.info("GRANT após fila -> %-12s (token=%s)", request.client_id, token)
+        self.log.info("GRANT após fila → %-12s (token=%s)", request.client_id, token)
         return pb2.AcquireResponse(granted=True, token=token, coordinator_id=self.my_id)
 
     def Release(self, request, context):
@@ -69,16 +77,38 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             if self.owner != request.client_id or self.owner_token != request.token:
                 return pb2.ReleaseResponse(success=False, message="not owner")
 
-            self.log.info("RELEASE <- %-12s", request.client_id)
+            self.log.info("RELEASE ← %-12s", request.client_id)
             self.owner = self.owner_token = None
 
             if self.queue:
                 nc, ne, nt = self.queue.pop(0)
                 self.owner, self.owner_token = nc, nt
-                self.log.info("GRANT próximo -> %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
+                self._lease_acquired_at = time.time()
+                self.log.info("GRANT próximo → %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
                 ne.set()
 
         return pb2.ReleaseResponse(success=True, message="OK")
+
+    LEASE_TIMEOUT = 8.0
+
+    def _lease_watchdog(self):
+        while True:
+            time.sleep(2.0)
+            with self.lock:
+                if (self.owner is not None
+                        and self.my_id == self.coordinator_id
+                        and (time.time() - self._lease_acquired_at) > self.LEASE_TIMEOUT):
+                    self.log.warning(
+                        "LEASE EXPIRADO: liberando owner=%s após %.1fs sem Release",
+                        self.owner, time.time() - self._lease_acquired_at)
+                    self.owner = self.owner_token = None
+                    if self.queue:
+                        nc, ne, nt = self.queue.pop(0)
+                        self.owner, self.owner_token = nc, nt
+                        self._lease_acquired_at = time.time()
+                        self.log.info("GRANT (watchdog) → %-12s (token=%s) fila=%d",
+                                      nc, nt, len(self.queue))
+                        ne.set()
 
     def Status(self, request, context):
         with self.lock:
@@ -86,7 +116,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                 my_id=self.my_id, coordinator_id=self.coordinator_id,
                 is_coordinator=(self.coordinator_id == self.my_id))
 
-    # Eleição: Algoritmo Bully 
+    # Eleição: Algoritmo Bully
 
     def Ping(self, request, context):
         with self.lock:
@@ -112,7 +142,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                 return
             self.election_in_progress = True
 
-        self.log.info("=== INICIANDO ELEIÇÃO (Bully) ===")
+        self.log.info(" INICIANDO ELEIÇÃO (Bully) ")
         higher_alive = False
         for pid in sorted(self.peers):
             if pid > self.my_id:
@@ -131,7 +161,6 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             self.log.info("Há nó de maior prioridade vivo — aguardando anúncio de vitória")
             return
 
-        # Nenhum nó de maior ID está vivo -> EU sou o novo coordenador
         with self.lock:
             self.coordinator_id       = self.my_id
             self.election_in_progress = False
@@ -152,7 +181,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             with self.lock:
                 coord = self.coordinator_id
             if coord == self.my_id:
-                continue
+                continue 
             try:
                 self._stub(coord).Ping(pb2.PingRequest(from_id=self.my_id), timeout=RPC_TIMEOUT)
             except grpc.RpcError:
@@ -168,7 +197,6 @@ def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
     for r in range(1, rounds + 1):
         pts = random.randint(min_pts, max_pts)
 
-        # ACQUIRE (segue o coordenador atual, retry em caso de falha)
         token = None
         while token is None:
             with node.lock:
@@ -185,7 +213,7 @@ def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
                 node.start_election()
                 time.sleep(1.0)
 
-        # Seção crítica: GetScore -> calcula -> UpdateScore
+        # SEÇÃO CRÍTICA: GetScore -> calcula -> UpdateScore
         try:
             current   = sb_stub.GetScore(pb2_sb.GetScoreRequest(game_id=game_id))
             new_score = current.score + pts
@@ -204,8 +232,10 @@ def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
         if r < rounds:
             time.sleep(random.uniform(0, think_time))
 
-    log.info("=== Sessão concluída: %d rodadas ===", rounds)
+    log.info(" Sessão concluída: %d rodadas ", rounds)
 
+
+# Main
 
 def parse_peers(s: str) -> dict[int, str]:
     peers = {}
@@ -220,7 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--id",     type=int, required=True, help="ID numérico deste nó (único)")
     parser.add_argument("--peers",  required=True,
                          help='Mapa de todos os nós, ex: "1=ip1:6000,2=ip2:6000,3=ip3:6000"')
-    parser.add_argument("--port",   type=int, default=5679)
+    parser.add_argument("--port",   type=int, default=6000)
     parser.add_argument("--scoreboard", default="localhost:5678")
     parser.add_argument("--players",  type=int, default=2)
     parser.add_argument("--rounds",   type=int, default=30)
