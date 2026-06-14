@@ -49,7 +49,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                 token = str(uuid.uuid4())[:8]
                 self.owner, self.owner_token = request.client_id, token
                 self._lease_acquired_at = time.time()
-                self.log.info("GRANT imediato → %-12s (token=%s)", request.client_id, token)
+                self.log.info("GRANT imediato -> %-12s (token=%s)", request.client_id, token)
                 return pb2.AcquireResponse(granted=True, token=token,
                                             coordinator_id=self.my_id)
 
@@ -67,7 +67,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             return pb2.AcquireResponse(granted=False, token="",
                                         coordinator_id=self.coordinator_id)
 
-        self.log.info("GRANT após fila → %-12s (token=%s)", request.client_id, token)
+        self.log.info("GRANT após fila -> %-12s (token=%s)", request.client_id, token)
         return pb2.AcquireResponse(granted=True, token=token, coordinator_id=self.my_id)
 
     def Release(self, request, context):
@@ -77,14 +77,14 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             if self.owner != request.client_id or self.owner_token != request.token:
                 return pb2.ReleaseResponse(success=False, message="not owner")
 
-            self.log.info("RELEASE ← %-12s", request.client_id)
+            self.log.info("RELEASE <- %-12s", request.client_id)
             self.owner = self.owner_token = None
 
             if self.queue:
                 nc, ne, nt = self.queue.pop(0)
                 self.owner, self.owner_token = nc, nt
                 self._lease_acquired_at = time.time()
-                self.log.info("GRANT próximo → %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
+                self.log.info("GRANT próximo -> %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
                 ne.set()
 
         return pb2.ReleaseResponse(success=True, message="OK")
@@ -106,7 +106,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                         nc, ne, nt = self.queue.pop(0)
                         self.owner, self.owner_token = nc, nt
                         self._lease_acquired_at = time.time()
-                        self.log.info("GRANT (watchdog) → %-12s (token=%s) fila=%d",
+                        self.log.info("GRANT (watchdog) -> %-12s (token=%s) fila=%d",
                                       nc, nt, len(self.queue))
                         ne.set()
 
