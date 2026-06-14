@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package node;
+
+// ─── Exclusão Mútua (igual ASR 13) ─────────────────────────────────────────
+
+message AcquireRequest {
+  string client_id = 1;
+}
+
+message AcquireResponse {
+  bool   granted        = 1;
+  string token          = 2;
+  int32  coordinator_id = 3;   // se granted=false, informa quem é o coordenador atual
+}
+
+message ReleaseRequest {
+  string client_id = 1;
+  string token      = 2;
+}
+
+message ReleaseResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  int32 my_id          = 1;
+  int32 coordinator_id = 2;
+  bool  is_coordinator = 3;
+}
+
+// ─── Eleição — Algoritmo Bully ──────────────────────────────────────────────
+
+message PingRequest {
+  int32 from_id = 1;
+}
+
+message PingResponse {
+  bool  alive          = 1;
+  int32 coordinator_id = 2;
+}
+
+message ElectionRequest {
+  int32 from_id = 1;
+}
+
+message ElectionResponse {
+  bool alive = 1;
+}
+
+message VictoryRequest {
+  int32 coordinator_id = 1;
+}
+
+message VictoryResponse {
+  bool ack = 1;
+}
+
+// ─── Serviço ────────────────────────────────────────────────────────────────
+
+service NodeService {
+  rpc Acquire  (AcquireRequest)  returns (AcquireResponse);
+  rpc Release  (ReleaseRequest)  returns (ReleaseResponse);
+  rpc Status   (StatusRequest)   returns (StatusResponse);
+
+  rpc Ping     (PingRequest)     returns (PingResponse);
+  rpc Election (ElectionRequest) returns (ElectionResponse);
+  rpc Victory  (VictoryRequest)  returns (VictoryResponse);
+}
