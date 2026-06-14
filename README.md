@@ -66,14 +66,14 @@ bash setup.sh
 
 ```
 instância-servidor  -> roda server.py        (porta 5678)
-instância-peer1     -> roda node.py --id 1   (porta 6000)
-instância-peer2     -> roda node.py --id 2   (porta 6000)
-instância-peer3     -> roda node.py --id 3   (porta 6000)
+instância-peer1     -> roda node.py --id 1   (porta 5679)
+instância-peer2     -> roda node.py --id 2   (porta 5679)
+instância-peer3     -> roda node.py --id 3   (porta 5679)
 ```
 
 Liberar no Security Group:
 - porta **5678** na instância-servidor
-- porta **6000** em TODAS as instâncias peer (election/heartbeat usa essa porta entre elas)
+- porta **5679** em TODAS as instâncias peer (election/heartbeat usa essa porta entre elas)
 
 ---
 
@@ -87,27 +87,31 @@ python3 server.py --host 0.0.0.0 --port 5678
 **2. Em CADA peer**, definir a mesma string `--peers` (IDs -> IP:porta de cada peer):
 
 ```bash
-PEERS="1=IP_PEER1:6000,2=IP_PEER2:6000,3=IP_PEER3:6000"
+PEERS="1=IP_PEER1:5679,2=IP_PEER2:5679,3=IP_PEER3:5679"
+```
+
+```bash
+PEERS="1=34.204.166.35:5679,2=3.234.216.76:5679,3=34.239.172.128:5679"
 ```
 
 **peer1:**
 ```bash
-python3 node.py --id 1 --port 6000 --peers "$PEERS" \
-    --scoreboard IP_SERVIDOR:5678 \
+python3 node.py --id 1 --port 5679 --peers "$PEERS" \
+    --scoreboard 3.227.138.6:5678 \
     --players 2 --rounds 60 --think 1 --startup-delay 10
 ```
 
 **peer2:**
 ```bash
-python3 node.py --id 2 --port 6000 --peers "$PEERS" \
-    --scoreboard IP_SERVIDOR:5678 \
+python3 node.py --id 2 --port 5679 --peers "$PEERS" \
+    --scoreboard 3.227.138.6:5678 \
     --players 2 --rounds 60 --think 1 --startup-delay 10
 ```
 
 **peer3:**
 ```bash
-python3 node.py --id 3 --port 6000 --peers "$PEERS" \
-    --scoreboard IP_SERVIDOR:5678 \
+python3 node.py --id 3 --port 5679 --peers "$PEERS" \
+    --scoreboard 3.227.138.6:5678 \
     --players 2 --rounds 60 --think 1 --startup-delay 10
 ```
 
