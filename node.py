@@ -1,29 +1,3 @@
-"""
-Nó Distribuído — ASR 14: Eleição de Coordenador (Algoritmo Bully)
-==================================================================
-Cada peer roda este mesmo programa. Cada nó:
-  1) Participa da eleição de coordenador (algoritmo Bully)
-  2) Se eleito, atua como coordenador de exclusão mútua (igual ASR 13)
-  3) Roda jogadores que usam o coordenador atual (qualquer um pode ser)
-
-Algoritmo Bully:
-  - Cada nó tem um ID numérico fixo. Maior ID = maior prioridade.
-  - Heartbeat: nós não-coordenadores fazem Ping periódico no coordenador.
-  - Se o Ping falhar -> nó inicia ELEIÇÃO: manda Election para todo nó
-    com ID MAIOR que o seu.
-      - Se NINGUÉM maior responder -> este nó se torna o coordenador
-        e avisa todos via Victory.
-      - Se ALGUÉM maior responder -> esse nó assume a eleição
-        (ao receber Election, todo nó também roda sua própria eleição).
-  - Resultado: o nó vivo com MAIOR ID sempre vence.
-
-Uso:
-    python3 node.py --id 3 --port 6000 \
-        --peers "1=IP1:6000,2=IP2:6000,3=IP3:6000" \
-        --scoreboard IP_SERVIDOR:5678 \
-        --players 2 --rounds 30 --think 1
-"""
-
 import grpc, threading, logging, argparse, time, uuid, random
 from concurrent import futures
 
@@ -35,27 +9,20 @@ import scoreboard_pb2_grpc as pb2_grpc_sb
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s", datefmt="%H:%M:%S")
 
-HEARTBEAT_INTERVAL = 2.0   # intervalo entre pings ao coordenador
-RPC_TIMEOUT        = 2.0   # timeout para chamadas de eleição/heartbeat
+HEARTBEAT_INTERVAL = 2.0
+RPC_TIMEOUT        = 2.0
 
 
 class NodeServicer(pb2_grpc.NodeServiceServicer):
-    """
-    Implementa o NodeService: exclusão mútua (quando coordenador)
-    + algoritmo Bully de eleição.
-    """
-
     def __init__(self, my_id: int, peers: dict[int, str]):
         self.my_id = my_id
-        self.peers = peers          # {id: "ip:porta"}, inclui o próprio nó
+        self.peers = peers
         self.log   = logging.getLogger(f"N{my_id}")
 
         self.lock = threading.RLock()
-        # Suposição inicial: o nó de maior ID é o coordenador
         self.coordinator_id       = max(peers.keys())
         self.election_in_progress = False
 
-        # Estado do mutex — só é usado de fato quando self.my_id == coordinator_id
         self.owner       = None
         self.owner_token = None
         self.queue       = []
@@ -63,19 +30,18 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
     def _stub(self, peer_id: int) -> pb2_grpc.NodeServiceStub:
         return pb2_grpc.NodeServiceStub(grpc.insecure_channel(self.peers[peer_id]))
 
-    # ── Exclusão Mútua (coordenador) ──────────────────────────────────────────
+    # Exclusão Mútua (coordenador)
 
     def Acquire(self, request, context):
         with self.lock:
             if self.my_id != self.coordinator_id:
-                # Não sou mais (ou ainda não sou) o coordenador
                 return pb2.AcquireResponse(granted=False, token="",
                                             coordinator_id=self.coordinator_id)
 
             if self.owner is None:
                 token = str(uuid.uuid4())[:8]
                 self.owner, self.owner_token = request.client_id, token
-                self.log.info("GRANT imediato → %-12s (token=%s)", request.client_id, token)
+                self.log.info("GRANT imediato -> %-12s (token=%s)", request.client_id, token)
                 return pb2.AcquireResponse(granted=True, token=token,
                                             coordinator_id=self.my_id)
 
@@ -93,7 +59,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             return pb2.AcquireResponse(granted=False, token="",
                                         coordinator_id=self.coordinator_id)
 
-        self.log.info("GRANT após fila → %-12s (token=%s)", request.client_id, token)
+        self.log.info("GRANT após fila -> %-12s (token=%s)", request.client_id, token)
         return pb2.AcquireResponse(granted=True, token=token, coordinator_id=self.my_id)
 
     def Release(self, request, context):
@@ -103,13 +69,13 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             if self.owner != request.client_id or self.owner_token != request.token:
                 return pb2.ReleaseResponse(success=False, message="not owner")
 
-            self.log.info("RELEASE ← %-12s", request.client_id)
+            self.log.info("RELEASE <- %-12s", request.client_id)
             self.owner = self.owner_token = None
 
             if self.queue:
                 nc, ne, nt = self.queue.pop(0)
                 self.owner, self.owner_token = nc, nt
-                self.log.info("GRANT próximo → %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
+                self.log.info("GRANT próximo -> %-12s (token=%s) fila=%d", nc, nt, len(self.queue))
                 ne.set()
 
         return pb2.ReleaseResponse(success=True, message="OK")
@@ -120,7 +86,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                 my_id=self.my_id, coordinator_id=self.coordinator_id,
                 is_coordinator=(self.coordinator_id == self.my_id))
 
-    # ── Eleição — Algoritmo Bully ───────────────────────────────────────────────
+    # Eleição: Algoritmo Bully 
 
     def Ping(self, request, context):
         with self.lock:
@@ -128,7 +94,6 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
 
     def Election(self, request, context):
         self.log.info("Recebido ELECTION de nó %d", request.from_id)
-        # Ao receber ELECTION, este nó também verifica seu próprio estado
         threading.Thread(target=self.start_election, daemon=True).start()
         return pb2.ElectionResponse(alive=True)
 
@@ -187,7 +152,7 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
             with self.lock:
                 coord = self.coordinator_id
             if coord == self.my_id:
-                continue   # eu sou o coordenador, não preciso me monitorar
+                continue
             try:
                 self._stub(coord).Ping(pb2.PingRequest(from_id=self.my_id), timeout=RPC_TIMEOUT)
             except grpc.RpcError:
@@ -195,20 +160,15 @@ class NodeServicer(pb2_grpc.NodeServiceServicer):
                 self.start_election()
 
 
-# ─── Jogador ──────────────────────────────────────────────────────────────────
+# Jogador
 
 def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
                 rounds: int, min_pts: int, max_pts: int, think_time: float):
-    """
-    Cada jogador segue o coordenador ATUAL (pode mudar durante a execução
-    se houver uma reeleição). Em caso de falha de comunicação com o
-    coordenador, dispara uma eleição e tenta de novo.
-    """
     log = logging.getLogger(player_id)
     for r in range(1, rounds + 1):
         pts = random.randint(min_pts, max_pts)
 
-        # ── ACQUIRE (segue o coordenador atual, retry em caso de falha) ──────
+        # ACQUIRE (segue o coordenador atual, retry em caso de falha)
         token = None
         while token is None:
             with node.lock:
@@ -225,7 +185,7 @@ def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
                 node.start_election()
                 time.sleep(1.0)
 
-        # ── SEÇÃO CRÍTICA: GetScore -> calcula -> UpdateScore ────────────────
+        # Seção crítica: GetScore -> calcula -> UpdateScore
         try:
             current   = sb_stub.GetScore(pb2_sb.GetScoreRequest(game_id=game_id))
             new_score = current.score + pts
@@ -247,8 +207,6 @@ def player_loop(node: NodeServicer, player_id: str, sb_stub, game_id: str,
     log.info("=== Sessão concluída: %d rodadas ===", rounds)
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 def parse_peers(s: str) -> dict[int, str]:
     peers = {}
     for part in s.split(","):
@@ -262,7 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--id",     type=int, required=True, help="ID numérico deste nó (único)")
     parser.add_argument("--peers",  required=True,
                          help='Mapa de todos os nós, ex: "1=ip1:6000,2=ip2:6000,3=ip3:6000"')
-    parser.add_argument("--port",   type=int, default=6000)
+    parser.add_argument("--port",   type=int, default=5679)
     parser.add_argument("--scoreboard", default="localhost:5678")
     parser.add_argument("--players",  type=int, default=2)
     parser.add_argument("--rounds",   type=int, default=30)
