@@ -1,5 +1,4 @@
 #!/bin/bash
-# Roda uma vez em cada máquina (servidor e todos os peers)
 
 pip install grpcio grpcio-tools
 
